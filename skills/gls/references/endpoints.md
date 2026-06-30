@@ -103,6 +103,42 @@ Rendered list route (DOM fallback):
 `ku-backend-v1` (card overview), `zv-bank-config`, `budgetcheck-analysis-v1`,
 `umsaetze-additional-info-service-v1`.
 
+## Transfers (Überweisung) — VERIFIED ✓ (`zv-credit-transfer`)
+
+**One pipeline covers external + internal + regular + Echtzeit.** All under
+`…/zv-credit-transfer/rest/de.bankenit.zv.credit.transfer.CreditTransferApi`.
+The endpoints are **stateful** — they require the form's order context, so they
+can't be replayed standalone (a bare call 400s `service_unavailable`). Drive the
+UI to validate/submit; this map is for understanding, not headless replay.
+
+1. `POST creditTransfer/check/vop` — verification-of-payee.
+   Body: `{ payeeBic, payeeIban, payeeName, senderBic }` → returns a `vopId` + a
+   match verdict. Match vs no-match is decided here, before the review screen.
+2. `POST creditTransfer/check` — validate the order. Returns an `orderHash`.
+   ```json
+   { "amount":"120.00", "recipient":"…", "iban":"DE…", "bic":"…",
+     "bankname":"…", "purpose":"…", "senderIban":"DE…",
+     "manualBic":false, "timeZoneOffsetMins":120, "vopId":"…",
+     "instantPayment":true }     // instantPayment ONLY present for Echtzeit
+   ```
+   - **Regular vs Echtzeit** = the single field `instantPayment: true` (absent/false = regular).
+   - **Internal (own account)** = same body; `payeeBic === senderBic` (e.g. both `GENODEM1GLS`).
+   - **VOP-mismatch override** carries **no extra flag** — the same `vopId` is sent; the
+     backend ties the override to the user's modal acknowledgement (UI/liability gate only).
+3. `POST …identitaet-tan-komponente-v1/…/liefereTanVerfahren` + `…/direktfreigabe/authentication`
+   `{ tanProzessId, sprachschluessel }` → starts the **decoupled SecureGo plus** push.
+4. `GET …/direktfreigabe/authentication/<tanProzessId>` — polled until the user approves on the phone.
+5. `POST creditTransfer/execute` — commit. Body: `{ orderHash, tanProcessId }`.
+
+Verification-of-payee verdicts (from the review screen / VOP call):
+- **match** → "stimmt … überein" → proceeds normally.
+- **no-match** → "stimmt **nicht** … überein" → a blocking **"Bitte prüfen"** modal
+  (keep / change); keeping shows a **no-refund liability disclaimer** before *Weiter*.
+
+Supporting calls seen in the flow: `creditTransfer/participation`,
+`zv-validierung-bankdaten/.../bank?iban=…` (BIC/bank resolution),
+`zv-konten-salden/.../salden-with-paging` (sender accounts with `CREDIT_TRANSFER` right).
+
 ## Page routes (SPA)
 
 | View | Route |

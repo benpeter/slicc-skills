@@ -39,28 +39,42 @@ brings it back.
 while true; do gls keepalive --quiet; sleep 180; done
 ```
 
-## Transfer (Überweisung) — documented, not shipped as a command
+## Transfer (Überweisung) — the `gls transfer` flow (verified end-to-end)
 
-Moving money needs a SecureGo plus confirmation, so it is **not** exposed as an
-automated command. The verified end-to-end UI flow, for the human or a future
-*guarded* command:
+Backed by the `zv-credit-transfer` API in [`endpoints.md`](endpoints.md). The
+command fills the form and stops at the review; `--send` clicks the final button
+and the **human approves in SecureGo plus**.
 
-1. Nav → **Überweisung** → SEPA form (`…/ueberweisung/sepa/#/erfassen`).
-2. **Auftraggeberkonto** (sender): the account selector defaults to the main
-   giro; change it if transferring from another account.
-3. **Zahlungsempfänger**: typing a name offers an autocomplete that includes your
-   own accounts as **"Umbuchungskonto …"** — picking one auto-fills the recipient
-   name **and** IBAN (the safe path for own-account transfers). Otherwise enter
-   name + IBAN.
-4. **Betrag** (e.g. `1000,00`), optional **Verwendungszweck**.
-5. **Eingaben prüfen** → review screen. GLS runs an IBAN/name check and states
-   whether the recipient name matches the IBAN (verification-of-payee).
-6. **Senden** → triggers the **SecureGo plus** approval. On success the
-   confirmation reads **"Überweisung erfolgreich entgegengenommen"** with a
-   timestamp; an own-bank transfer books within moments.
+1. Nav → SEPA form (`…/ueberweisung/sepa/#/erfassen`). **The tab must be the
+   foreground/active tab** or the Angular fields won't accept input.
+2. **Auftraggeberkonto** (sender): defaults to the main giro; change via the
+   account dropdown for `--from`.
+3. **Zahlungsempfänger** — the recipient field has an autocomplete that
+   **overlays the IBAN field**:
+   - **External**: type the name, **press Escape to close the dropdown** (else the
+     next click/fill lands on a suggestion and fills a *wrong* recipient+IBAN),
+     then fill the IBAN.
+   - **Internal (own account)**: type the account name and **select the
+     "Umbuchungskonto … <name>" suggestion** — it auto-fills name + own IBAN.
+   - Refs shift whenever the autocomplete opens/closes — re-snapshot before each fill.
+4. **Betrag** (`120,00`), optional **Verwendungszweck**. **Echtzeit**: tick "Als
+   Echtzeitüberweisung ausführen" — this **reflows the form** (the "Eingaben
+   prüfen" ref moves), so re-read it after.
+5. **Eingaben prüfen** → **verification-of-payee** runs (yes, even for external
+   banks):
+   - **match** → review shows "stimmt … überein"; continue.
+   - **no-match** → a blocking modal **"Bitte prüfen"** (⦿ Empfängername ändern /
+     ○ Ihre Eingabe beibehalten); choosing *keep* expands a **no-refund liability
+     disclaimer** before **Weiter**. The override carries **no API flag** (same
+     `vopId`). An automated command must **stop here** unless explicitly told to keep.
+6. Confirm: the review's button is **"Senden"** or **"Bestätigen mit SecureGo plus"**
+   → a **decoupled SecureGo plus push** to the phone. The page polls until you
+   approve, then commits → **"Überweisung erfolgreich entgegengenommen"** + timestamp.
+   Internal own-bank transfers also require SecureGo (no TAN-free path was observed).
+   SEPA routes by **IBAN**, so the name only affects the VOP label, not where money lands.
 
-A future automated transfer command must stop at step 5 (fill + review) and hand
-the **Senden**/SecureGo step to the human — never auto-confirm a payment.
+**Safety contract for the command:** never auto-keep a VOP mismatch; never complete
+without the human's SecureGo approval (`--send` is opt-in, and SecureGo is on the phone).
 
 ## Expected bookings vs. standing orders
 

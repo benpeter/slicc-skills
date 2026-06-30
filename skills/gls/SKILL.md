@@ -1,13 +1,14 @@
 ---
 name: gls
 description: >-
-  Read GLS Bank online-banking data from the CLI — accounts, balances, and
-  transactions (with name/purpose search and date ranges). Use when the user
-  asks about their GLS account, GLS Bank, gls-online-filiale, their Kontostand /
-  balance, Umsätze / transactions, "how much did I get from X", "when did I last
-  pay Y", standing orders / Daueraufträge, or wants to script anything against
-  GLS online banking. Talks to the GLS "services_cloud" portal's own JSON API
-  from the logged-in page context. Read-only — it never moves money.
+  Read GLS Bank online banking and prepare transfers from the CLI — accounts,
+  balances, transactions (name/purpose search + date ranges), and a guarded SEPA
+  transfer. Use when the user asks about their GLS account, GLS Bank,
+  gls-online-filiale, their Kontostand / balance, Umsätze / transactions, "how
+  much did I get from X", "when did I last pay Y", or wants to send / prepare a
+  GLS transfer or Überweisung. Talks to the GLS "services_cloud" portal's own
+  JSON API from the logged-in page context. Reads are read-only; transfers stop
+  at the review screen and only move money on an explicit human SecureGo approval.
 allowed-tools: bash
 ---
 
@@ -55,6 +56,12 @@ gls search <text> [account] [--days=N] [--json]
 
 gls keepalive [--quiet]
 # Refresh the session (reload → renews token + resets the idle timer).
+
+gls transfer (--to-iban=IBAN --name="Recipient" | --to-account=Name) --amount=NN,NN \
+             [--purpose=TEXT] [--instant] [--from=Account] [--send] [--confirm-mismatch]
+# Prepare + validate a SEPA transfer in the GLS form and STOP at the review
+# screen (shows verification-of-payee). Money only moves with --send AND your
+# SecureGo plus approval on your phone. See "Transfers" below.
 ```
 
 ### Examples
@@ -67,27 +74,51 @@ gls transactions Eingang --from=2026-06-01 --to=2026-06-30
 gls transactions --search=Telekom --days=90 --json | jq '.[].betragEuro'
 ```
 
+## Transfers (guarded)
+
+`gls transfer` drives the SEPA form, fills it, runs **Eingaben prüfen**, and stops
+at the review screen showing GLS's **verification-of-payee** result. It never moves
+money on its own.
+
+```bash
+# External — name is checked against the IBAN's registered holder (VOP):
+gls transfer --to-iban=DE55… --name="Max Mustermann" --amount=120,00 --purpose="Rechnung 5"
+
+# Own-account (internal) — picks the "Umbuchungskonto" suggestion automatically:
+gls transfer --to-account="Rücklagen" --amount=200,00
+
+# Instant (Direktüberweisung / Echtzeit):  add --instant
+# Submit it too (then approve on your phone):  add --send
+```
+
+- **VOP name mismatch** → the command **stops** (exit 2) and tells you, rather than
+  silently keeping a non-matching name. Re-run with `--confirm-mismatch` to accept
+  GLS's no-refund liability and keep the name.
+- **`--send`** clicks *Senden* / *Bestätigen mit SecureGo plus*; the transfer then
+  **only completes when you approve it in SecureGo plus on your phone**. Without
+  `--send` the command just prepares + validates and leaves the review on screen.
+- All amounts use German format (`120,00`). Default sender is the main giro; use
+  `--from=<account>` to send from another. The full flow + the API pipeline are in
+  [`references/ui-flows.md`](references/ui-flows.md) and
+  [`references/endpoints.md`](references/endpoints.md).
+
 ## How it works
 
-- Reads go through the page-context fetch helper in
-  [`scripts/gls.jsh`](scripts/gls.jsh): the script finds the GLS tab via
-  `playwright-cli tab-list`, writes a tiny `fetch(..., {credentials:'include'})`
-  expression to `/shared/`, runs it with `playwright-cli eval-file --tab=<id>`,
-  and parses the JSON back. The browser carries cookies + origin, so the
-  `proxy-gateway` accepts the call with no extra auth.
-- The discovered API surface (accounts, transactions, balances, standing orders,
-  session/OAuth) is mapped in [`references/endpoints.md`](references/endpoints.md).
+- The script uses SLICC's modern `.jsh` runtime: `require('sliccy:browser')` for
+  page-context fetch/eval against the logged-in GLS tab (cookies + origin carried,
+  no extra auth) and `require('sliccy:exec')` to drive the browser CLI for tab
+  discovery and the transfer form. (These replaced the old bare `exec`/`fs`
+  globals on 2026-06-24 — see `skill-authoring/jsh-runtime-extensions.md`.)
+- The discovered API surface (accounts, transactions, balances, the
+  `zv-credit-transfer` pipeline, session/OAuth) is mapped in
+  [`references/endpoints.md`](references/endpoints.md).
 
-## Limits & safety
+## Notes & safety
 
-- **Read-only by design.** No transfer/standing-order/payment command ships here.
-  Moving money on GLS requires a **SecureGo plus** confirmation that only the
-  account holder can give; the full Überweisung UI flow is documented (for the
-  human, or a future *guarded* command) in
-  [`references/ui-flows.md`](references/ui-flows.md).
-- **401 / logged out** → run `gls keepalive`; if that reports "logged out", sign
-  in again in the browser.
-- Driving GLS from a **SLICC tray follower** (e.g. cup mode) has extra quirks —
-  the GLS tab must be foregrounded for its data to load and for the page to stay
-  drivable. See the "Driving from a SLICC follower" note in
+- **401 / logged out** → run `gls keepalive`; if that reports "logged out", sign in
+  again in the browser. Sign-in + SecureGo are always human-only.
+- Driving from a **SLICC tray follower** (cup mode) is flaky — the GLS tab must be
+  foregrounded for its data to load and to stay drivable, and the control link can
+  detach. This skill is reliable in a **normal** SLICC float (local tab); see the
+  "Driving from a SLICC follower" note in
   [`references/ui-flows.md`](references/ui-flows.md).
