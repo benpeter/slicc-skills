@@ -47,8 +47,49 @@ async function glsTabs() {
     .sort((a, b) => a.logout - b.logout || b.bank - a.bank);
 }
 
-// --- Page-context fetch via the browser bridge; tries candidates, skips dead --
+const BANKING_START = 'https://www.gls-online-filiale.de/services_cloud/portal/m/banking_start';
+const PROBE = '/konto-service/v2/konto/group?kontoFilter=%7B%7D&groupBy=INDIVIDUELL';
+
+// Run an async page-context expression in a tab; returns the value, or the
+// sentinel {__detached:true} when the control link isn't attached.
+async function evalIn(tabId, code) {
+  try { return await browser.evalAsync(tabId, code); } catch (e) { return { __detached: true }; }
+}
+// Auth-probe a tab → HTTP status (200 live, 401/403 logged out), or null if detached.
+async function ping(tabId) {
+  const r = await evalIn(tabId, '(async()=>{try{const r=await fetch(' + JSON.stringify(SP + PROBE) + ',{credentials:"include"});return r.status;}catch(e){return -1;}})()');
+  return r && r.__detached ? null : r;
+}
+const runtimeOf = (id) => (id && id.includes(':') ? id.split(':')[0] : null);
+
+// Resolve a GLS tab with a LIVE (HTTP 200) session that we can actually drive.
+// Mirrors the verified recovery: a pre-existing tab is often stale/logged-out, or
+// (in cup/follower mode) can't be attached. Probe every candidate for 200; if none
+// is live+drivable, open a FRESH FOREGROUND banking tab — a tab WE open inherits the
+// authenticated session and, foregrounded on the follower, the leader attaches to it.
 let _tab = null;
+async function resolveLiveTab() {
+  if (_tab && (await ping(_tab)) === 200) return _tab;
+  _tab = null;
+  const tabs = await glsTabs();
+  for (const c of tabs) if ((await ping(c.id)) === 200) { _tab = c.id; return _tab; }
+  // none live/drivable → open a fresh foreground tab on the same runtime (follower) if any
+  const rt = tabs.map((t) => runtimeOf(t.id)).find(Boolean);
+  const args = ['tab-new', BANKING_START, '--foreground'];
+  if (rt) args.push('--runtime=' + rt);
+  const out = (await pw(args)).stdout || '';
+  let fresh = (out.match(/targetId:\s*([^\]\s]+)/) || [])[1] || null;
+  if (fresh && rt && !fresh.includes(':')) fresh = rt + ':' + fresh; // composite id for a follower tab
+  if (fresh)
+    for (let i = 0; i < 12; i++) {
+      await sleep(700);
+      const st = await ping(fresh);
+      if (st === 200) { _tab = fresh; return _tab; }
+      if (st === 401 || st === 403) break; // a fresh tab is also logged out → session genuinely expired
+    }
+  cli.die('No logged-in GLS session. Open https://www.gls-online-filiale.de and log in (with SecureGo), then retry.');
+}
+
 async function pageFetch(path, { method = 'GET', body = null } = {}) {
   const init =
     '{method:' + JSON.stringify(method) + ',credentials:"include",headers:{Accept:"application/json"' +
@@ -56,11 +97,9 @@ async function pageFetch(path, { method = 'GET', body = null } = {}) {
   const code =
     '(async()=>{const r=await fetch(' + JSON.stringify(SP + path) + ',' + init +
     ');const t=await r.text();let j=null;try{j=JSON.parse(t)}catch(e){}return {status:r.status,json:j,text:j?null:t.slice(0,200)};})()';
-  if (_tab) { try { return await browser.evalAsync(_tab, code); } catch (e) { _tab = null; } }
-  const cands = await glsTabs();
-  if (!cands.length) cli.die('No GLS tab found. Open https://www.gls-online-filiale.de and log in, then try again.');
-  for (const c of cands) { try { const r = await browser.evalAsync(c.id, code); _tab = c.id; return r; } catch (e) {} }
-  cli.die('No drivable GLS tab (control link detached on all candidates). In a normal SLICC float the GLS tab drives fine; in cup/follower mode foreground it first.');
+  let r = await evalIn(await resolveLiveTab(), code);
+  if (r && r.__detached) { _tab = null; r = await evalIn(await resolveLiveTab(), code); } // tab dropped mid-call → re-resolve once
+  return r;
 }
 function checkAuth(res) {
   if (!res) cli.die('GLS request failed (no response).');
@@ -153,15 +192,12 @@ const commands = {
 
   async keepalive() {
     const { flags } = process.argv.parseFlags();
-    const cands = await glsTabs();
-    if (!cands.length) cli.die('No GLS tab to keep alive.');
-    await pw(['reload', '--tab=' + cands[0].id]);
-    // reload destroys the JS context briefly — retry a few times before declaring logged-out
-    let res = null;
-    for (let i = 0; i < 5; i++) { await sleep(700); try { _tab = null; res = await pageFetch('/konto-service/v2/konto/group?kontoFilter=%7B%7D&groupBy=INDIVIDUELL'); if (res && res.status === 200) break; } catch (e) {} }
-    if (res && res.status === 200) { if (!flags.quiet) cli.out('GLS session alive (refreshed).'); }
-    else if (res && (res.status === 401 || res.status === 403)) cli.die('GLS session is logged out — log back in at gls-online-filiale.de.');
-    else cli.die('GLS session did not respond after reload — check the window.');
+    const tab = await resolveLiveTab(); // ensures a live tab (opens a fresh one if all are stale)
+    await pw(['reload', '--tab=' + tab]); // reload re-bootstraps the SPA → renews the OAuth token
+    let st = null;
+    for (let i = 0; i < 6; i++) { await sleep(700); st = await ping(tab); if (st === 200) break; if (st === 401 || st === 403) break; }
+    if (st === 200) { if (!flags.quiet) cli.out('GLS session alive (refreshed).'); }
+    else cli.die('GLS session is logged out — log back in at gls-online-filiale.de.');
   },
 
   // Prepare + VERIFY a SEPA transfer, stop at the review. Fail-closed: every field
@@ -181,9 +217,7 @@ const commands = {
     if (!/^\d{1,9},\d{2}$/.test(amount)) cli.die('Amount must be German format with cents, e.g. --amount=120,00 (got "' + amount + '"). No thousands separator.');
     if (toIban) { if (!name) cli.die('External transfer needs --name="Recipient" (verification-of-payee runs against it).'); if (!/^DE\d{20}$/.test(toIban)) cli.die('--to-iban must be a German IBAN (DE + 20 digits).'); }
 
-    const tab = (await glsTabs())[0];
-    if (!tab) cli.die('No GLS tab. Open + log in to gls-online-filiale.de first.');
-    const T = tab.id;
+    const T = await resolveLiveTab(); // live, drivable tab (opens a fresh foreground one if needed)
     const snap = async () => (await pw(['snapshot', '--tab=' + T])).stdout;
     const refOf = (s, re) => { const m = s.split('\n').find((l) => re.test(l)); return m ? (m.match(/\be[0-9]+\b/) || [])[0] : null; };
     const need = (s, re, field) => { const r = refOf(s, re); if (!r) cli.die('Could not find "' + field + '" on the SEPA form (page changed or not loaded).'); return r; };

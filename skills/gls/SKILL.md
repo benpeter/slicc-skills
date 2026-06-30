@@ -113,12 +113,27 @@ gls transfer --to-account="Rücklagen" --amount=200,00
   `zv-credit-transfer` pipeline, session/OAuth) is mapped in
   [`references/endpoints.md`](references/endpoints.md).
 
+## Session discovery (how it finds a live tab)
+
+Every command resolves a **live, drivable** GLS tab before doing anything:
+
+1. Probe each open GLS tab with a real auth call — a tab is only used if it returns
+   **HTTP 200** (stale / logged-out / detached tabs are skipped, not trusted).
+2. If none is live+drivable, **open a fresh banking tab in the foreground** (on the
+   same follower runtime, if any). A tab the skill opens itself inherits the
+   authenticated session, and foregrounded, a tray follower attaches to it — this is
+   the verified fix for "I have a logged-in tab but the command 401s / won't drive."
+3. If even the fresh tab is logged out, the session is genuinely expired → it tells
+   you to log in (rather than failing on a confusing 401).
+
+So you don't have to babysit tabs: with a live GLS login anywhere in the
+browser/follower, the commands find or open a tab that works.
+
 ## Notes & safety
 
 - **401 / logged out** → run `gls keepalive`; if that reports "logged out", sign in
   again in the browser. Sign-in + SecureGo are always human-only.
-- Driving from a **SLICC tray follower** (cup mode) is flaky — the GLS tab must be
-  foregrounded for its data to load and to stay drivable, and the control link can
-  detach. This skill is reliable in a **normal** SLICC float (local tab); see the
-  "Driving from a SLICC follower" note in
-  [`references/ui-flows.md`](references/ui-flows.md).
+- **SLICC tray follower (cup mode):** the skill auto-opens a fresh foreground tab as
+  above, so it self-heals the follower's "can't drive a pre-existing tab" quirk. It's
+  most reliable in a **normal** SLICC float (local tab). Background on the follower
+  attach behavior is in [`references/ui-flows.md`](references/ui-flows.md).

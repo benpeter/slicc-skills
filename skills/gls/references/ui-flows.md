@@ -85,6 +85,29 @@ without the human's SecureGo approval (`--send` is opt-in, and SecureGo is on th
   next N days". Direct debits (SEPA-Lastschriften) are **not** standing orders and
   appear nowhere here; project them from transaction history instead.
 
+## Live-tab discovery & the fresh-foreground-tab recovery (verified)
+
+Observed failure (session cc6012ca): with several GLS tabs open — some on the
+**logout** page, one supposedly live — `gls accounts` kept returning **401**,
+because discovery trusted a tab by its URL instead of its auth state, and in
+follower mode a **pre-existing** tab couldn't be foregrounded/attached. The fix the
+human found and the skill now encodes:
+
+- **Trust auth, not the URL.** Probe each candidate with a real API call; only a
+  tab that returns **HTTP 200** is used. A `…/logout` or stale tab returns 401 and
+  is skipped.
+- **Open a fresh tab yourself, foregrounded.** `playwright-cli tab-new
+  <banking_start> --runtime=<follower> --foreground` — a tab the leader opens
+  inherits the follower's authenticated session, and `--foreground` is what makes
+  the follower actually **attach** to it (a background fresh tab opened but did
+  *not* drive; the foreground one did). This recovers the "logged-in but won't
+  drive" state without any human tab juggling.
+- **Distinguish stale-tab from logged-out.** If even a fresh tab probes 401, the
+  GLS session is genuinely expired → ask the human to log in, instead of failing on
+  a confusing 401 against a stale tab.
+
+`resolveLiveTab()` in `scripts/gls.jsh` implements exactly this.
+
 ## Driving from a SLICC tray follower (cup mode)
 
 When the GLS tab lives on a **tray follower** (e.g. the human's browser joined to
