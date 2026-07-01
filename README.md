@@ -9,6 +9,7 @@ into a reusable `*.jsh` CLI skill that SLICC's agent can call).
 | Skill | What it does |
 | --- | --- |
 | [`gls`](skills/gls/) | Read-only GLS Bank online-banking access — accounts, balances, transactions (with search + date ranges). Calls the GLS portal's own JSON API from the logged-in page context. Never moves money. |
+| [`alm`](skills/alm/) | Adobe Learning Manager (Captivate Prime). List enrollments & progress, search the catalog, view/enroll trainings, and get player links — via the public `primeapi/v2`. Mandatory-training listing (`alm-mandatory.sh`) uses ALM's internal `mandatory` flag from the logged-in page context. |
 
 ## Using a skill in SLICC
 

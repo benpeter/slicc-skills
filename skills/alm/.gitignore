@@ -1,0 +1,2 @@
+# Never commit the stored ALM session token / context
+.config.json
